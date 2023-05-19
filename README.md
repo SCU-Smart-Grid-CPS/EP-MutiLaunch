@@ -12,10 +12,13 @@ Simple GUI to rapidly launch EnergyPlus simulations in parallel or series. A spe
 - Running bulk batches of simulations in series
 - Detecting and running all simulations in a single folder and subfolders.
 - Running simulations according to a saved queue file - useful when running a large batch of simulations repeatedly.
+- Python-based
+- Cross-platform: Windows, macOS, Linux, and anything else that can run Python and EnergyPlus.
 
 ## Running in Python
 
 ### Prerequisites
+- EnergyPlus installed.
 - Python 3.7 or newer
 - tkinter
 - webbrowser
@@ -158,9 +161,10 @@ For debugging, look at the _epml\_out.log_ file to check for additional error me
 
 1. Slab and Basement calculations do not work when running EnergyPlus via command line. These must still be run in EP Launch. 
 2. GUI controls for removing .idf files under the Select .idf files box are extremely buggy. 
-  1. It can be difficult to tell which are selected
-  2. Sometimes if you remove a file, it will think there are no files left and request to add more .idfs before running
-  3. Removing .idfs can cause it to return an invalid filepath error.
+    1. It can be difficult to tell which are selected
+    2. Sometimes if you remove a file, it will think there are no files left and request to add more .idfs before running
+    3. Removing .idfs can cause it to return an invalid filepath error.
+3. Status messages are unreliable - will sometimes return "success" when simulations failed.
 
 ## Contributors & Acknowledgements
 Santa Clara University, School of Engineering, Department of Mechanical Engineering, Smart Grid & Residential Energy Simulation Team. Portions of the development and research are made possible through the support of NIST via federal awards #70NANB20H204 and #70NANB22H159, and by internal support by the School of Engineering at Santa Clara University
