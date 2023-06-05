@@ -172,7 +172,7 @@ For debugging, look at the _epml\_out.log_ file to check for additional error me
     1. It can be difficult to tell which are selected
     2. Sometimes if you remove a file, it will think there are no files left and request to add more .idfs before running
     3. Removing .idfs can cause it to return an invalid filepath error.
-3. Advanced Settings preprocessing and postprocessing code may save incorrectly if the code contains a newline character. This is because of how .ini file formatting works; a string with multiple lines must be converted to a single line separated by `\n` and when converting back, the code 
+3. Advanced Settings preprocessing and postprocessing code may save incorrectly if the code contains a newline character. This is because of how .ini file formatting works; a string with multiple lines must be converted to a single line separated by `\n` and when converting back, the code will put a line break in place of every new line character.
 4. Status messages are unreliable - will sometimes return "success" when simulations failed. This happens primarily in Parallel mode because of the way simulations are launched, the code cannot detect EnergyPlus return codes for success/failure. In Series, the EnergyPlus return codes are detected correctly. 
 
 ## Contributors & Acknowledgements
