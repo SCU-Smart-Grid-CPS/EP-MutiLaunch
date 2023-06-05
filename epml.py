@@ -1,8 +1,8 @@
 # epml.py (epgui.py)
 # EnergyPlus MultiLaunch Script
 # Author(s):    Brian Woo-Shem
-# Version:      0.41
-# Last Updated: 2023-05-18
+# Version:      0.50
+# Last Updated: 2023-06-05
 
 
 # Import
@@ -10,22 +10,16 @@ import tkinter as tk
 from tkinter import ttk
 from tkinter import filedialog as fd
 from tkinter.messagebox import showinfo
+from tkinter.scrolledtext import ScrolledText
 import webbrowser
 import time
 from configparser import ConfigParser
 import subprocess
 import os
 import csv
+import sys #for logging
 #from tkinter import *
 
-# TODO: Send output to logger
-# https://stackoverflow.com/questions/11124093/redirect-python-print-output-to-logger#11124247
-useLog = True
-if useLog:
-	import sys
-	print('\nAll output will be written to epml_out.log. Please check log for any errors\n')
-	log = open('epml_out.log','w')
-	sys.stdout = log
 
 # File & String Manipulation Functions
 
@@ -84,9 +78,74 @@ def getFileName(fs,ext):
 		i = fs.rindex('\\')
 	return remExt(str(fs[i+1:]),ext)
 
+
+#Format a string from typical code text box entry to format that can be stored in .ini file
+# issue is ', ", \, newline, tab will cause formatting errors when reading .ini
+# PROBLEMS
+# .ini does not support multiline variables. 
+# https://stackoverflow.com/questions/33930852/how-to-insert-multi-line-value-using-configparser
+# https://stackoverflow.com/questions/11399665/new-lines-with-configparser
+# Either need to convert them into single line - this creates new problem if the user
+# inputs a string like 
+#    print('one\ntwo')
+# which gets stored as
+#	 print('one
+#	 two')
+# and cannot be converted back easily
+# OR need to save it as something with a tab on each subsequent line
+# example:
+# 	variable = print('one')
+#		print('two')
+#
+# TODO [high priority]: Find a workaround to this bug
+# - worst case, can change it so each pre/postcode variable saves to a different text file, which would allow reading mutiline without any conversions
+
+def text_to_ini(s):
+	#several attempts that don't work
+	
+	# ini does not support triple quote method
+	#s = '\'\'\'' + s + '\'\'\''
+	
+	#Tried splitting by other newline characters, problem is both true new line and new line within a user
+	# created string both use '\n' and there's no good way to differentiate. 
+	'''
+	ss = s.split('\u2028')
+	s2 = ''
+	for line in ss:
+		s2 = s2 + line + '\u2028\t'
+	'''
+	
+	#buggy - if you insert a 
+	# Newline character
+	s = s.replace('\n','\\n')
+	# Tab to "\t"
+	s = s.replace('\t','\\t')
+	# Put a backslash in front of every quote mark in the code
+	s = s.replace('\'',"\\'")
+	s = s.replace('\"','\\"')
+	#s = s.replace('\\','\\\\')
+	
+	return s
+
+#Undo formatting in text_to_ini()
+def ini_to_text(s):
+	#s = s[3:len(s)-3]
+	
+	# Newline character
+	s = s.replace('\\n','\n')
+	# Tab to "\t"
+	s = s.replace('\\t','\t')
+	# Put a backslash in front of every quote mark in the code
+	s = s.replace("\\'",'\'')
+	s = s.replace('\\"','\"')
+	#s = s.replace('\\\\','\\')
+	
+	return s
+
+
 # Load settings =============================================================================================
 cp = ConfigParser()
-setfile = '.ep_multilaunch_settings.ini'
+setfile = 'ep_multilaunch_settings.ini'
 cp.read(setfile)
 try:
 	sp = cp.get('general','sp')
@@ -96,6 +155,13 @@ try:
 	fpath_select_epw = cp.get('filepaths','fpath_select_epw')
 	fpath_folder = cp.get('filepaths','fpath_folder')
 	fpath_queue = cp.get('filepaths','fpath_queue')
+	precode = ini_to_text(cp.get('general','preprocessing_code'))
+	postcode = ini_to_text(cp.get('general','postprocessing_code'))
+	precodepy = ini_to_text(cp.get('general','preprocessing_code_python'))
+	postcodepy = ini_to_text(cp.get('general','postprocessing_code_python'))
+	useLogTemp = cp.get('general','use_log_file')
+	if 'T' in useLogTemp: useLog = True
+	else: useLog = False
 except (NameError, ValueError, KeyError, IOError): #note ConfigParser.NoOptionError is not catchable. could use Exception
 	print("Warning: Could not get settings from ",setfile," \n Using default settings")
 	sp = 'parallel'
@@ -105,13 +171,41 @@ except (NameError, ValueError, KeyError, IOError): #note ConfigParser.NoOptionEr
 	fpath_select_epw = '/'
 	fpath_folder = '/'
 	fpath_queue = '/'
+	precode = ''
+	postcode = ''
+	precodepy = ''
+	postcodepy = ''
+	useLog = False
 
-def saveFilePaths():
-	# Since this method replaces entire file contents, we need to recreate the general settings part
+# Set up ability to switch output between log file or console
+# https://stackoverflow.com/questions/11124093/redirect-python-print-output-to-logger#11124247
+# https://stackoverflow.com/questions/59255738/how-to-toggle-sys-stdout-between-a-file-and-terminal
+console = sys.stdout
+log = open('epml_out.log','w')
+
+# Function to save all settings that go in the .ini file
+# Called whenever new directory is selected to save filepath & whenever advanced settings are applied
+def saveSettings():
 	global sp
 	global dtime
 	global ep_dir
 	settings_str = '[general]\nsp = '+sp+'\ndtime = '+str(dtime)+'\nep_dir = '+ep_dir+'\n'
+	
+	global precode
+	global postcode
+	global precodepy
+	global postcodepy
+	# Handle log vs console setting
+	global useLog
+	#print('\nAll output will be written to epml_out.log. Please check log for any errors\n')
+	if useLog:
+		sys.stdout = log
+	else:
+		sys.stdout = console
+	
+	#Replace() is for handling new line: .ini can't read a true newline, but can write literal "\n" in a string
+	process_code_str = '\n' + 'preprocessing_code = ' + text_to_ini(precode) + '\npostprocessing_code = ' + text_to_ini(postcode) + '\npreprocessing_code_python = ' + text_to_ini(precodepy) + '\npostprocessing_code_python = ' + text_to_ini(postcodepy) +  '\nuse_log_file = ' + str(useLog) + '\n'
+	#process_code_str = '\n' + 'preprocessing_code = ' + text_to_ini(precode) + '\npostprocessing_code = ' + postcode.replace('\n','\\n') + '\npreprocessing_code_python = ' + precodepy.replace('\n','\\n') + '\npostprocessing_code_python = ' + postcodepy.replace('\n','\\n') +  '\nuse_log_file = ' + str(useLog) + '\n'
 	
 	# Get file paths stored in global variables
 	global fpath_select_idf
@@ -122,7 +216,7 @@ def saveFilePaths():
 	fpath_str = '\n[filepaths]\nfpath_select_idf = '+fpath_select_idf+'\nfpath_select_epw = '+fpath_select_epw+'\nfpath_folder = '+fpath_folder+'\nfpath_queue = '+fpath_queue+'\n'
 	
 	# Combine strings
-	set_contents = settings_str + fpath_str
+	set_contents = settings_str + process_code_str + fpath_str
 	
 	# Overwrite settings ini file with new settings and filepaths
 	global setfile
@@ -130,7 +224,8 @@ def saveFilePaths():
 	stxt.write(set_contents)
 	stxt.close()
 	
-	print('saved filepaths as:\n',fpath_str)
+	print('saved settings as:\n',set_contents)
+	
 
 # Functions for running simulations ==========================================================================
 
@@ -191,6 +286,8 @@ def run_ep_series(sims2run,wfiles):
 
 			#Launch subprocess in the shell
 			epproc = subprocess.run(runcmd, capture_output=True, shell=True)
+			print(epproc.stdout)
+			print(epproc.stderr)
 
 			#Display result. 0 = success; else failure
 			print(" returned: ", epproc.returncode)
@@ -261,7 +358,7 @@ def run_ep_parallel(sims2run,wfiles):
 		pname = "Py launchcodes" + folderDelim + "run_" + str(pn) + ".py"
 		print("Launching: ", pname)
 		p = subprocess.Popen(pname, shell=True)
-		#TODO - Low priority: make outputs fromm the run_####.py go to log not command line when useLog = True
+		#TODO [Low priority]: make outputs fromm the run_####.py go to log not command line when useLog = True
 		# https://stackoverflow.com/questions/2502833/store-output-of-subprocess-popen-call-in-a-string
 		#p = subprocess.Popen(pname, stdout=subprocess.PIPE)
 		simprocesses.append(p)
@@ -290,12 +387,67 @@ def run_ep_parallel(sims2run,wfiles):
 	
 	return worked
 
+# Run preprocessing code
+def runBefore():
+	global precode
+	global precodepy
+	
+	# Bash cannot handle multiline commands. It only runs the first line
+	'''
+	execute_bash = subprocess.run(precode, capture_output=True, shell=True)
+	print(execute_bash.stdout)
+	print(execute_bash.stderr)
+	'''
+	precode_list = precode.split('\n')
+	
+	for line in precode_list:
+		print('Run >> ', line)
+		execute_bash = subprocess.run(line, capture_output=True, shell=True)
+		print(execute_bash.stdout)
+		print(execute_bash.stderr)
+	
+	# Run Python. 
+	# Python can handle multiline including loops, etc. 
+	exec(precodepy)
+	
+	'''
+	precode_list = precode.split('\n')
+	
+	for line in precode_list:
+		execute_code = subprocess.run(line, capture_output=True, shell=True)
+	
+	precodepy_list = precodepy.split('\n')
+	
+	for line in precodepy_list:
+		exec(line)
+	'''
 
+# Run postprocessing code
+def runAfter():
+	global postcode
+	global postcodepy
+	
+	# Run Bash code, one line at a time.
+	postcode_list = postcode.split('\n')
+	
+	for line in postcode_list:
+		print('Run >> ', line)
+		execute_bash = subprocess.run(line, capture_output=True, shell=True)
+		print(execute_bash.stdout)
+		print(execute_bash.stderr)
+	
+	# Run Python. 
+	# Python can handle multiline including loops, etc. 
+	exec(postcodepy)
 
 
 # Create GUI in Tkinter ======================================================================================
 # Root window
 w = tk.Tk()
+# Set size
+# - Needed to control size of scrolledtext elements in Advanced Settings (tab5) otherwise window will overflow the monitor
+# - TODO [low priority]: devise a method that considers current screen resolution/size so it's not giant on low resolution monitors or tiny on 4k screens. 
+w.geometry("800x600")
 
 # Window title
 w.title('EnergyPlus MultiLaunch')
@@ -369,7 +521,7 @@ def select_idfs():
 	# Save current filepath to .idf file
 	fpath_select_idf = getPath(filenames[0],fpath_select_idf)
 	print('Next .idf files directory: ',fpath_select_idf)
-	saveFilePaths()
+	saveSettings()
 	
 	global epwfilename
 	if epwfilename == '':
@@ -391,7 +543,7 @@ def select_epw():
 	global epwfilename
 	epwfilename = fd.askopenfilename(
 		title='Browse files',
-		initialdir=fpath_select_epw, # TODO: make it open from last used directory
+		initialdir=fpath_select_epw,
 		filetypes=filetypes
 	)
 	print('Got: ', epwfilename)
@@ -401,7 +553,7 @@ def select_epw():
 	# Save current filepath to .epw file
 	fpath_select_epw = getPath(epwfilename,fpath_select_epw)
 	print('Next epw file directory: ',fpath_select_epw)
-	saveFilePaths()
+	saveSettings()
 	
 	if numIDF < 1:
 		status1.config(text = 'Select .idf above.', background=color_select, foreground='black')
@@ -461,6 +613,7 @@ def run_simulations_select():
 	w.after(10, lambda: run_simulations_select_2())
 
 def run_simulations_select_2():
+	runBefore()
 	global numIDF
 	if not epwfilename == '' and numIDF > 0:
 		print('Run simulations via select files method')
@@ -489,6 +642,7 @@ def run_simulations_select_2():
 		#time.sleep(2) #only for testing
 		#only the last status1 message appears, after the sleep
 		if res1 == True:
+			runAfter()
 			status1.config(text = status_success, background=color_success, foreground='black')
 		else:
 			status1.config(text = status_failed, background=color_failed, foreground='white')
@@ -503,7 +657,8 @@ status1 = tk.Label(tab1, text = 'Select .idf and .epw above.', background=color_
 #tab1.grid_rowconfigure(0,weight=1)
 tab1.grid_columnconfigure(0,weight=1)
 tab1.grid_columnconfigure(1,weight=1)
-tab1.grid_rowconfigure(7,weight=1)
+tab1.grid_rowconfigure(3,weight=2)
+#tab1.grid_rowconfigure(7,weight=1)
 
 instructions.grid(column=0,row=1,columnspan=3,sticky='ew')
 button_select_idfs.grid(column=0,row=2,sticky='ew')
@@ -570,7 +725,7 @@ def select_folder():
 		# Save current folder path to settings file
 		fpath_folder = getPath(folderpath,fpath_folder)
 		print('Next folder search directory: ',fpath_folder)
-		saveFilePaths()
+		saveSettings()
 		
 		status2.config(text = status_ready, background=color_ready, foreground='black')
 
@@ -581,6 +736,7 @@ def run_simulations_folder():
 	w.after(10, lambda: run_simulations_folder_2())
 
 def run_simulations_folder_2():
+	runBefore()
 	global list_epw_autodetect
 	global list_idf_autodetect
 	if len(list_epw_autodetect) > 0 and len(list_idf_autodetect) > 0:
@@ -600,6 +756,7 @@ def run_simulations_folder_2():
 		
 		#Interpret and return result message
 		if res2 == True:
+			runAfter()
 			status2.config(text = status_success, background=color_success, foreground='black')
 		else:
 			status2.config(text = status_failed, background=color_failed, foreground='white')
@@ -657,7 +814,7 @@ def select_queue():
 	# Save current filepath to queue file
 	fpath_queue = getPath(queue_file,fpath_queue)
 	print('Next queue file directory: ',fpath_queue)
-	saveFilePaths()
+	saveSettings()
 	
 	#TODO [medium priority]: Move reading of queue file to here & display the input files and weather file before running like in Autodetect mode
 	
@@ -670,30 +827,35 @@ def run_simulations_queue():
 	w.after(10, lambda: run_simulations_queue_2())
 
 def run_simulations_queue_2():
+	runBefore()
 	global queue_file
 	if not queue_file == '':
-		list_idf_queue = []
-		list_epw_queue = []
-		#read csv with headers
-		with open(queue_file) as csvfile:
-			readCSV = csv.DictReader(csvfile, delimiter=',')
-			for row in readCSV:
-				list_idf_queue.append(row['Filepath'])
-				list_epw_queue.append(row['Weather'])
-		print('Run simulations via queue method')
-		#status3.config(text = status_running, background=color_running, foreground='black')
-		if sp == 'parallel':
-			print('run parallel')
-			res3 = run_ep_parallel(list_idf_queue,list_epw_queue)
-		else:
-			print('run series')
-			res3 = run_ep_series(list_idf_queue,list_epw_queue)
-		
-		#Interpret and return result message
-		if res3 == True:
-			status3.config(text = status_success, background=color_success, foreground='black')
-		else:
-			status3.config(text = status_failed, background=color_failed, foreground='white')
+		try:
+			list_idf_queue = []
+			list_epw_queue = []
+			#read csv with headers
+			with open(queue_file) as csvfile:
+				readCSV = csv.DictReader(csvfile, delimiter=',')
+				for row in readCSV:
+					list_idf_queue.append(row['Filepath'])
+					list_epw_queue.append(row['Weather'])
+			print('Run simulations via queue method')
+			#status3.config(text = status_running, background=color_running, foreground='black')
+			if sp == 'parallel':
+				print('run parallel')
+				res3 = run_ep_parallel(list_idf_queue,list_epw_queue)
+			else:
+				print('run series')
+				res3 = run_ep_series(list_idf_queue,list_epw_queue)
+			
+			#Interpret and return result message
+			if res3 == True:
+				runAfter
+				status3.config(text = status_success, background=color_success, foreground='black')
+			else:
+				status3.config(text = status_failed, background=color_failed, foreground='white')
+		except (KeyError):
+			status3.config(text = 'Error: Invalid queue_file. Could not run anything.', background=color_failed, foreground='white')
 	else:
 		status3.config(text = 'Error: Invalid queue_file. Could not run anything.', background=color_failed, foreground='white')
 
@@ -734,7 +896,94 @@ ep_dir_tk = tk.StringVar()
 ep_dir_tk.set(ep_dir)
 ep_dir_entry = tk.Entry(tab4, textvariable = ep_dir_tk)
 
-def saveSettings():
+uselog_label = tk.Label(tab4, text = 'Output to Log File (epml_out.log) or Console/Terminal/Command Prompt Window')
+uselog_tk = tk.BooleanVar()
+uselog_true = ttk.Radiobutton(tab4, text='Log File', value=True, variable=uselog_tk)
+uselog_false = ttk.Radiobutton(tab4, text='Console (for debugging)', value=False, variable=uselog_tk)
+uselog_tk.set(useLog)
+
+# Entry won't allow multiline
+'''
+precode_label = tk.Label(tab4, text = 'Preprocessing code to execute before all simulations - Console/Bash code')
+precode_tk = tk.Entry(tab4, text = precode)
+postcode_label = tk.Label(tab4, text = 'Postprocessing code to execute after all simulations complete - Console/Bash code')
+postcode_tk = tk.Entry(tab4, text = postcode)
+
+precodepy_label = tk.Label(tab4, text = 'Preprocessing code to execute before all simulations - Python code')
+precodepy_tk = tk.Entry(tab4, text = precodepy)
+postcodepy_label = tk.Label(tab4, text = 'Postprocessing code to execute after all simulations complete - Python code')
+postcodepy_tk = tk.Entry(tab4, text = postcodepy)
+'''
+
+'''
+precode_label = tk.Label(tab4, text = 'Preprocessing code to execute before all simulations - Console/Bash code')
+precode_tk = tk.Text(tab4,height=24)
+precode_tk.insert(tk.END, precode)
+
+postcode_label = tk.Label(tab4, text = 'Postprocessing code to execute after all simulations complete - Console/Bash code')
+postcode_tk = tk.Text(tab4,height=24)
+postcode_tk.insert(tk.END, postcode)
+
+precodepy_label = tk.Label(tab4, text = 'Preprocessing code to execute before all simulations - Python code')
+precodepy_tk = tk.Text(tab4,height=24)
+precodepy_tk.insert(tk.END, precodepy)
+postcodepy_label = tk.Label(tab4, text = 'Postprocessing code to execute after all simulations complete - Python code')
+postcodepy_tk = tk.Text(tab4,height=24)
+postcodepy_tk.insert(tk.END, postcodepy)
+'''
+#TODO [High priority]: the text boxes appear way too large, and there isn't an obvious way to fix it using grid. --Done
+# Solution:
+# https://stackoverflow.com/questions/14887610/specify-the-dimensions-of-a-tkinter-text-box-in-pixels
+precode_subframe = tk.Frame(tab4,height=50,width=400)
+precode_subframe.grid_propagate(False)
+precode_label = tk.Label(tab4, text = 'Preprocessing code to execute before all simulations - Console/Bash code')
+precode_tk = tk.Text(precode_subframe)
+# replace is to convert newline stored as literal string "\n" to an actual new line - see saveSettings function for explanation
+precode_tk.insert(tk.END, ini_to_text(precode))
+precode_ysb = ttk.Scrollbar(precode_subframe,orient=tk.VERTICAL,command=precode_tk.yview)
+precode_tk['yscrollcommand'] = precode_ysb.set
+
+precode_tk.pack(side='left', fill='both', expand=True)
+precode_ysb.pack(side='right',fill='y')
+'''
+precode_subframe.grid_columnconfigure(0,weight=1)
+precode_tk.grid(column=0,row=1,sticky='nsew')
+precode_ysb.grid(column=1,row=1,sticky='ns')
+'''
+
+# Easier method is using scrolledtext.
+# Both seem to get the same end result
+# TODO [low priority]: Change all of these to scrolledtext for consistency
+precodepy_subframe = tk.Frame(tab4,height=50)
+precodepy_subframe.grid_propagate(False)
+precodepy_label = tk.Label(tab4, text = 'Preprocessing code to execute before all simulations - Python code')
+#precodepy_tk = tk.Text(tab4,height=24)
+precodepy_tk = tk.scrolledtext.ScrolledText(precodepy_subframe)
+precodepy_tk.insert(tk.END, ini_to_text(precodepy))
+precodepy_tk.pack(side='left', fill='both', expand=True)
+#precodepy_tk.grid(column=0,row=1,sticky='nsew')
+
+postcode_subframe = tk.Frame(tab4,height=50)
+postcode_subframe.grid_propagate(False)
+postcode_label = tk.Label(tab4, text = 'Postprocessing code to execute after all simulations complete - Console/Bash code')
+#postcode_tk = tk.Text(tab4,height=24)
+postcode_tk = tk.scrolledtext.ScrolledText(postcode_subframe)
+#postcode_tk.insert(tk.END, postcode.replace('\\n','\n'))
+postcode_tk.insert(tk.END, ini_to_text(postcode))
+postcode_tk.pack(side='left', fill='both', expand=True)
+
+postcodepy_subframe = tk.Frame(tab4,height=50)
+postcodepy_subframe.grid_propagate(False)
+postcodepy_label = tk.Label(tab4, text = 'Postprocessing code to execute after all simulations complete - Python code')
+#postcodepy_tk = tk.Text(tab4,height=24)
+postcodepy_tk = tk.scrolledtext.ScrolledText(postcodepy_subframe)
+#postcodepy_tk.insert(tk.END, postcodepy.replace('\\n','\n'))
+postcodepy_tk.insert(tk.END, ini_to_text(postcodepy))
+postcodepy_tk.pack(side='left', fill='both', expand=True)
+
+# When "Apply Settings" button pushed, get the new settings from the various widgets.
+def getSettings():
+	# Modifies each of the global variables that correspond to the settings.
 	global sp
 	sp = sp_tk.get()
 	
@@ -749,6 +998,23 @@ def saveSettings():
 	global ep_dir
 	ep_dir = ep_dir_tk.get()
 	
+	global useLog
+	useLog = uselog_tk.get()
+	
+	global precode
+	precode = precode_tk.get("1.0", "end-1c")
+	global precodepy
+	precodepy = precodepy_tk.get("1.0", "end-1c")
+	global postcode
+	postcode = postcode_tk.get("1.0", "end-1c")
+	global postcodepy
+	postcodepy = postcodepy_tk.get("1.0", "end-1c")
+	
+	#Call saveSettings function to save these variables
+	saveSettings()
+	
+	return tk.messagebox.showinfo('Settings Saved','Settings Saved Successfully!')
+	'''
 	#rewrite settings ini file
 	global setfile
 	stxt = open(setfile, "w")
@@ -756,29 +1022,55 @@ def saveSettings():
 	stxt.write(new_settings_str)
 	stxt.close()
 	
-	# TODO [low priority]: Some kind of indicator so user knows that settings were saved
 	print('saved settings as: sp = ',sp,'\tdtime = ', dtime,'\tep_dir = ',ep_dir)
-	
+	'''
 
-button_save_settings = tk.Button(tab4, text = 'Apply', command = saveSettings)
+button_save_settings = tk.Button(tab4, text = 'Apply', command = getSettings)
 
 tab4.grid_columnconfigure(0,weight=1)
 tab4.grid_columnconfigure(1,weight=1)
-tab4.grid_rowconfigure(5,weight=1)
+tab4.grid_columnconfigure(2,weight=1)
+tab4.grid_rowconfigure(8,weight=1)
+tab4.grid_rowconfigure(10,weight=1)
+tab4.grid_rowconfigure(12,weight=1)
+tab4.grid_rowconfigure(14,weight=1)
+#tab4.grid_rowconfigure(16,weight=1)
 
-i_seriesparallel.grid(column=0,row=1,columnspan=2,sticky='w')
-rb_parallel.grid(column=0,row=2,sticky='ew')
-rb_series.grid(column=1,row=2,sticky='ew')
+i_seriesparallel.grid(column=0,row=1,sticky='w')
+rb_parallel.grid(column=1,row=1,sticky='ew')
+rb_series.grid(column=2,row=1,sticky='ew')
 dtime_label.grid(column=0,row=3,sticky='w')
-dtime_entry.grid(column=1,row=3,sticky='ew')
+dtime_entry.grid(column=1,row=3,columnspan=2,sticky='ew')
 ep_dir_label.grid(column=0,row=4,sticky='w')
-ep_dir_entry.grid(column=1,row=4,sticky='ew')
-button_save_settings.grid(column=1,row=5,sticky='ew')
+ep_dir_entry.grid(column=1,row=4,columnspan=2,sticky='ew')
+uselog_label.grid(column=0,row=5,columnspan=3,sticky='w')
+uselog_true.grid(column=0,row=6,sticky='ew')
+uselog_false.grid(column=1,row=6,sticky='ew')
+
+#TODO [High priority]: the text boxes appear way too large, and there isn't an obvious way to fix it using grid. -- resolved
+# height, sticky, and ipady are all getting ignored. 
+precode_label.grid(column=0,row=7,columnspan=3,sticky='w')
+#precode_tk.grid(column=0,row=8,columnspan=3,sticky='nsew',ipady=20) #ipady=50
+precode_subframe.grid(column=0,row=8,columnspan=3,sticky='nsew')
+precodepy_label.grid(column=0,row=9,columnspan=3,sticky='w')
+precodepy_subframe.grid(column=0,row=10,columnspan=3,sticky='nsew')
+postcode_label.grid(column=0,row=11,columnspan=3,sticky='w')
+postcode_subframe.grid(column=0,row=12,columnspan=3,sticky='nsew')
+postcodepy_label.grid(column=0,row=13,columnspan=3,sticky='w')
+postcodepy_subframe.grid(column=0,row=14,columnspan=3,sticky='nsew')
+'''
+postcode_label.grid(column=0,row=11,columnspan=3,sticky='w')
+postcode_tk.grid(column=0,row=12,columnspan=3,sticky='ew')
+postcodepy_label.grid(column=0,row=13,columnspan=3,sticky='w')
+postcodepy_tk.grid(column=0,row=14,rowspan=2,columnspan=3,sticky='ew')
+'''
+
+button_save_settings.grid(column=2,row=16,sticky='ew')
 
 
 # 5 - About
 i_about_title = tk.Label(tab5, text = 'EnergyPlus MultiLaunch',font=('Arial',18,'bold'))
-i_about_str = '\nSuperlauncher for running many EnergyPlus simulations in series or parallel.\n\nVersion: 0.41   Updated: 2023-05-18\n\nLicensed under the GNU General Public License v3\nCreated by Brian Woo-Shem\nSanta Clara University, School of Engineering, Department of Mechanical Engineering\n'
+i_about_str = '\nSuperlauncher for running many EnergyPlus simulations in series or parallel.\n\nVersion: 0.50   Updated: 2023-06-05\n\nLicensed under the GNU General Public License v3\nCreated by Brian Woo-Shem\nSanta Clara University, School of Engineering, Department of Mechanical Engineering\n'
 i_about = tk.Label(tab5, text = i_about_str)
 i_copyrights = tk.Label(tab5, text = '\nEnergyPlus is a trademark of the US Department of Energy. \nEnergyPlus MultiLaunch is an independent project and is not affiliated nor endorsed by the US Department of Energy.')
 
